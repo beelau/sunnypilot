@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import signal
 import time
 from collections.abc import Callable
 
@@ -11,7 +12,8 @@ from openpilot.system.ui.lib.networkmanager import (NM, NM_CONNECTION_IFACE, NM_
                                                     NM_IFACE, NM_PATH, NM_SETTINGS_IFACE, NM_SETTINGS_PATH,
                                                     NMDeviceState)
 
-RECONNECT_TIMEOUT = 60.0
+RECONNECT_TIMEOUT = 20.0
+DBUS_CALL_TIMEOUT = 2.0
 RETRY_INTERVAL = 5.0
 POLL_INTERVAL = 1.0
 
@@ -33,7 +35,7 @@ class NetworkManagerWifi:
     self._nm = DBusAddress(NM_PATH, bus_name=NM, interface=NM_IFACE)
 
   def _call(self, message):
-    reply = self._conn.send_and_get_reply(message)
+    reply = self._conn.send_and_get_reply(message, timeout=DBUS_CALL_TIMEOUT)
     if reply.header.message_type == MessageType.error:
       raise RuntimeError(str(reply.body))
     return reply
@@ -119,6 +121,27 @@ def reconnect_last_wifi(ssid: str, *, timeout: float = RECONNECT_TIMEOUT,
   return False
 
 
+class ReconnectDeadlineExpired(BaseException):
+  pass
+
+
+def _deadline_expired(signum, frame):
+  raise ReconnectDeadlineExpired
+
+
+def reconnect_with_deadline(ssid: str, *, timeout: float = RECONNECT_TIMEOUT, **kwargs) -> bool:
+  # Runs in the standalone reconnect process. Bounds even the D-Bus Hello call.
+  old_handler = signal.signal(signal.SIGALRM, _deadline_expired)
+  signal.setitimer(signal.ITIMER_REAL, timeout)
+  try:
+    return reconnect_last_wifi(ssid, timeout=timeout, **kwargs)
+  except ReconnectDeadlineExpired:
+    return False
+  finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, old_handler)
+
+
 def main() -> None:
   from openpilot.common.params import Params
   from openpilot.common.swaglog import cloudlog
@@ -130,7 +153,7 @@ def main() -> None:
       cloudlog.info('No last Wi-Fi network saved; skipping boot reconnect')
       return
 
-    connected = reconnect_last_wifi(ssid, log_exception=cloudlog.exception)
+    connected = reconnect_with_deadline(ssid, log_exception=cloudlog.exception)
     cloudlog.info(f"Boot Wi-Fi reconnect {'succeeded' if connected else 'timed out'}")
   finally:
     params.put_bool('WifiReconnectDone', True, block=True)

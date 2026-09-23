@@ -1,15 +1,31 @@
 import threading
 import time
+from types import SimpleNamespace
 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import log, messaging
 from openpilot.cereal.messaging import SubMaster, PubMaster
-from openpilot.selfdrive.ui.soundd import SELFDRIVE_STATE_TIMEOUT, check_selfdrive_timeout_alert
+from openpilot.selfdrive.ui.soundd import SELFDRIVE_STATE_TIMEOUT, Soundd, check_selfdrive_timeout_alert
 
 AudibleAlert = log.SelfdriveState.AudibleAlert
 
 
 class TestSoundd(OpenpilotTestCase):
+  def test_eye_alarm_does_not_cancel_normal_repeat_prompt(self):
+    sound = Soundd.__new__(Soundd)
+    alerts = []
+    sound.update_alert = alerts.append
+    state = {
+      'selfdriveState': SimpleNamespace(alertSound=SimpleNamespace(raw=AudibleAlert.promptRepeat)),
+      'driverMonitoringState': SimpleNamespace(visionPolicyState=SimpleNamespace(eyesClosed=False)),
+    }
+    class FakeSm(dict):
+      updated = {'selfdriveState': False, 'driverMonitoringState': True}
+
+    sm = FakeSm(state)
+    sound.get_audible_alert(sm)
+    assert alerts == [AudibleAlert.promptRepeat]
+
   def test_check_selfdrive_timeout_alert(self, mocker):
     sm = SubMaster(['selfdriveState', 'selfdriveStateSP'])
     pm = PubMaster(['selfdriveState', 'selfdriveStateSP'])

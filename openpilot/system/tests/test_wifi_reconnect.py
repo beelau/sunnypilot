@@ -1,5 +1,10 @@
-from openpilot.system.ui.lib.networkmanager import NMDeviceState
-from openpilot.system.wifi_reconnect import reconnect_last_wifi
+from openpilot.system.ui.lib.networkmanager import NM, NM_IFACE, NM_PATH, NMDeviceState
+import time
+from types import SimpleNamespace
+from jeepney import DBusAddress
+from unittest.mock import MagicMock
+
+from openpilot.system.wifi_reconnect import RECONNECT_TIMEOUT, NetworkManagerWifi, reconnect_last_wifi, reconnect_with_deadline
 
 
 class FakeClock:
@@ -76,3 +81,40 @@ def test_reconnect_recovers_when_networkmanager_starts_late():
                              connector_factory=factory, monotonic=clock.monotonic, sleep=clock.sleep)
   assert calls == 2
   assert connector.attempts == ['Desk WiFi']
+
+
+def test_default_reconnect_window_is_twenty_seconds():
+  assert RECONNECT_TIMEOUT == 20.0
+
+
+def test_saved_connection_skips_access_point_and_matches_ssid():
+  connector = NetworkManagerWifi.__new__(NetworkManagerWifi)
+  connector._call = MagicMock(side_effect=[
+    SimpleNamespace(body=[['/ap', '/phone']]),
+    SimpleNamespace(body=[{'802-11-wireless': {'mode': ('s', 'ap'), 'ssid': ('ay', b'Desk WiFi')}}]),
+    SimpleNamespace(body=[{'802-11-wireless': {'mode': ('s', 'infrastructure'), 'ssid': ('ay', b'Desk WiFi')}}]),
+  ])
+
+  assert connector._saved_connection('Desk WiFi') == '/phone'
+  assert connector._call.call_count == 3
+
+
+def test_activate_saved_uses_matching_profile_and_wifi_device():
+  connector = NetworkManagerWifi.__new__(NetworkManagerWifi)
+  connector._wifi_device = MagicMock(return_value='/wifi-device')
+  connector._saved_connection = MagicMock(return_value='/phone-profile')
+  connector._call = MagicMock(return_value=SimpleNamespace(body=[]))
+  connector._nm = DBusAddress(NM_PATH, bus_name=NM, interface=NM_IFACE)
+
+  assert connector.activate_saved('Desk WiFi')
+  assert connector._call.call_args.args[0].body == ('/phone-profile', '/wifi-device', '/')
+
+
+def test_deadline_interrupts_stalled_dbus_setup():
+  def stalled_factory():
+    time.sleep(0.2)
+    raise AssertionError("deadline did not interrupt setup")
+
+  start = time.monotonic()
+  assert not reconnect_with_deadline('Desk WiFi', timeout=0.02, connector_factory=stalled_factory)
+  assert time.monotonic() - start < 0.15

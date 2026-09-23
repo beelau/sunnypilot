@@ -152,7 +152,6 @@ class SelfdriveD(CruiseHelper):
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
     self.eye_relaxed_mode = False
-    self.eye_relaxed_previous_personality = None
     self.state_machine = StateMachine()
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
@@ -252,19 +251,7 @@ class SelfdriveD(CruiseHelper):
     # Handle DM
     if not self.CP.notCar:
       eye_closed = self.sm['driverMonitoringState'].visionPolicyState.eyesClosed
-      if eye_closed and self.enabled and not self.eye_relaxed_mode:
-        current_personality = self.params.get("LongitudinalPersonality", return_default=True)
-        self.eye_relaxed_previous_personality = current_personality
-        if current_personality != int(log.LongitudinalPersonality.relaxed):
-          self.params.put("LongitudinalPersonality", int(log.LongitudinalPersonality.relaxed), block=True)
-        self.eye_relaxed_mode = True
-      elif self.eye_relaxed_mode and (not eye_closed or not self.enabled):
-        current_personality = self.params.get("LongitudinalPersonality", return_default=True)
-        # Respect a manual personality change made while the temporary mode was active.
-        if current_personality == int(log.LongitudinalPersonality.relaxed) and self.eye_relaxed_previous_personality is not None:
-          self.params.put("LongitudinalPersonality", self.eye_relaxed_previous_personality, block=True)
-        self.eye_relaxed_mode = False
-        self.eye_relaxed_previous_personality = None
+      self.eye_relaxed_mode = bool(eye_closed and self.enabled)
 
       # Block engaging until lockout times out or ignition reset
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
@@ -596,7 +583,8 @@ class SelfdriveD(CruiseHelper):
     if self.enabled:
       clear_event_types.add(ET.NO_ENTRY)
 
-    pers = LONGITUDINAL_PERSONALITY_MAP[self.personality]
+    effective_personality = int(log.LongitudinalPersonality.relaxed) if self.eye_relaxed_mode else self.personality
+    pers = LONGITUDINAL_PERSONALITY_MAP[effective_personality]
     callback_args = [self.CP, CS, self.sm, self.is_metric,
                      self.state_machine.soft_disable_timer, pers]
 
@@ -616,7 +604,7 @@ class SelfdriveD(CruiseHelper):
     ss.state = self.state_machine.state
     ss.engageable = not self.events.contains(ET.NO_ENTRY)
     ss.experimentalMode = self.experimental_mode
-    ss.personality = self.personality
+    ss.personality = int(log.LongitudinalPersonality.relaxed) if self.eye_relaxed_mode else self.personality
 
     ss.alertText1 = self.AM.current_alert.alert_text_1
     ss.alertText2 = self.AM.current_alert.alert_text_2

@@ -55,8 +55,10 @@ always_true = [True] * int(TEST_TIMESPAN / DT_DMON)
 always_false = [False] * int(TEST_TIMESPAN / DT_DMON)
 
 class TestMonitoring(OpenpilotTestCase):
-  def _run_seq(self, msgs, interaction, engaged, lowspeed):
+  def _run_seq(self, msgs, interaction, engaged, lowspeed, *, lockout_disabled=None):
     DM = DriverMonitoring()
+    if lockout_disabled is not None:
+      DM.lockout_disabled = lockout_disabled
     alert_lvls = []
     for idx in range(len(msgs)):
       DM._update_states(msgs[idx], [0, 0, 0], 0, engaged[idx], lowspeed[idx])
@@ -75,15 +77,60 @@ class TestMonitoring(OpenpilotTestCase):
     assert all(a == 0 for a in alert_lvls)
     assert d_status.active_policy == log.DriverMonitoringState.MonitoringPolicy.vision
 
-  def test_eyes_closed_is_separate_from_distraction(self):
+  def test_eyes_closed_enters_distraction_after_three_seconds(self):
     DM = DriverMonitoring()
     for _ in range(int(DM.settings._EYES_CLOSED_TIME / DT_DMON) + 1):
       DM._update_states(msg_EYES_CLOSED_ONLY, [0, 0, 0], 0, True, False)
 
     assert DM.eyes_closed
-    assert not DM.distracted_types['eye']
-    assert not DM.driver_distracted
+    assert DM.distracted_types['eye']
+    assert DM.driver_distracted
     assert DM.get_state_packet().driverMonitoringState.visionPolicyState.eyesClosed
+
+  def test_sleep_probability_requires_three_seconds(self):
+    DM = DriverMonitoring()
+    state = make_msg(True, pose_distracted=False)
+    state.leftDriverData.sleepProb = 0.95
+    for _ in range(int(DM.settings._EYES_CLOSED_TIME / DT_DMON) + 1):
+      DM._update_states(state, [0, 0, 0], 0, True, False)
+    assert DM.eyes_closed and DM.distracted_types['eye']
+
+    state.leftDriverData.sleepProb = 0.
+    DM._update_states(state, [0, 0, 0], 0, True, False)
+    assert not DM.eyes_closed and not DM.distracted_types['eye']
+
+  def test_gaze_and_short_blinks_do_not_trigger_eye_alarm(self):
+    DM = DriverMonitoring()
+    state = make_msg(True, distracted=True, pose_distracted=False)
+    for _ in range(int(2.0 / DT_DMON)):
+      DM._update_states(state, [0, 0, 0], 0, True, False)
+    assert not DM.eyes_closed
+    state = make_msg(True, pose_distracted=False)
+    DM._update_states(state, [0, 0, 0], 0, True, False)
+    assert not DM.distracted_types['eye']
+
+  def test_phone_does_not_trigger_distraction(self):
+    DM = DriverMonitoring()
+    state = make_msg(True, pose_distracted=False)
+    state.leftDriverData.phoneProb = 1.
+    DM._update_states(state, [0, 0, 0], 0, True, False)
+    assert not DM.distracted_types['phone']
+    assert not DM.driver_distracted
+
+  def test_all_monitoring_causes_keep_alerts_without_lockout(self):
+    for states in (always_distracted, always_no_face):
+      alert_lvls, DM = self._run_seq(states, always_false, always_true, always_false, lockout_disabled=True)
+      assert max(alert_lvls) == log.DriverMonitoringState.AlertLevel.three
+      assert not DM.lockout_active
+      assert not DM.get_state_packet().driverMonitoringState.lockout
+
+  def test_always_on_lockout_respects_bypass(self):
+    DM = DriverMonitoring(always_on=True)
+    DM.awareness = 0.
+    DM.lockout_disabled = True
+    assert not DM.get_state_packet().driverMonitoringState.alwaysOnLockout
+    DM.lockout_disabled = False
+    assert DM.get_state_packet().driverMonitoringState.alwaysOnLockout
 
   def test_pose_pitch_asymmetric_boundaries(self):
     def pose_is_distracted(pitch):
@@ -118,7 +165,7 @@ class TestMonitoring(OpenpilotTestCase):
 
   # engaged, distracted past red and beyond the no-response window -> unavailability response + lockout
   def test_distracted_lockout(self):
-    alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true, always_false)
+    alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true, always_false, lockout_disabled=False)
     assert alert_lvls[int(DISTRACTED_SECONDS_TO_RED / DT_DMON)] == 3
     assert d_status.lockout_active
     assert d_status.lockout_time_elapsed > 0
@@ -126,7 +173,7 @@ class TestMonitoring(OpenpilotTestCase):
 
   # no face -> wheeltouch red, sustained past the no-response timeout -> unavailability response + lockout
   def test_invisible_lockout(self):
-    _, d_status = self._run_seq(always_no_face, always_false, always_true, always_false)
+    _, d_status = self._run_seq(always_no_face, always_false, always_true, always_false, lockout_disabled=False)
     assert d_status.active_policy == log.DriverMonitoringState.MonitoringPolicy.wheeltouch
     assert d_status.lockout_active
     assert d_status.lockout_count >= 1

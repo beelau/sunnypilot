@@ -385,6 +385,18 @@ class TestThreadRaces(OpenpilotTestCase):
     assert wm._wifi_state.ssid == "B"
     assert wm._wifi_state.status == ConnectStatus.CONNECTING
 
+  def test_init_wifi_state_remembers_existing_connection(self, mocker):
+    wm = _make_wm(mocker, connections={"Phone Hotspot": "/path/phone"})
+    wm._wifi_device = "/dev/wifi0"
+    wm._router_main = mocker.MagicMock()
+    wm._router_main.send_and_get_reply.return_value.body = [('u', NMDeviceState.ACTIVATED)]
+    wm._get_active_wifi_connection.return_value = ("/path/phone", {})
+    params = mocker.patch('openpilot.system.ui.lib.wifi_manager.Params').return_value
+
+    wm._init_wifi_state()
+
+    params.put.assert_called_once_with("LastWifiSSID", "Phone Hotspot")
+
   def test_init_wifi_state_race_user_tap_during_dbus(self, mocker):
     """User taps B while _init_wifi_state's DBus calls are in flight.
 

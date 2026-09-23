@@ -38,8 +38,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DoUninstall", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DriverTooDistracted", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"DriverLockoutCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, INT, "0"}},
-    // Developer/test toggle: keep distraction alerts, but do not enter the DM lockout state.
-    {"DisableDriverMonitoringLockout", {PERSISTENT | DONT_LOG, BOOL}},
+    // Disable re-engagement lockouts by default for every monitoring cause; alerts and no-response behavior remain.
+    {"DisableDriverMonitoringLockout", {PERSISTENT | DONT_LOG, BOOL, "1"}},
     {"AlphaLongitudinalEnabled", {PERSISTENT | DEVELOPMENT_ONLY | BACKUP, BOOL}},
     {"ExperimentalMode", {PERSISTENT | BACKUP, BOOL}},
     {"ExperimentalModeConfirmed", {PERSISTENT | BACKUP, BOOL}},

@@ -51,6 +51,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
     self._EYES_CLOSED_TIME = 3.0
+    self._SLEEP_THRESHOLD = 0.8
     self._PHONE_THRESH = 0.5
     self._POSE_PITCH_THRESHOLD = 0.3133
     self._POSE_PITCH_DOWN_THRESHOLD = 0.40
@@ -142,6 +143,7 @@ class DriverMonitoring:
     self.eyes_closed = False
     self.eyes_closed_time = 0.0
     self.phone_prob = 0.
+    self.sleep_prob = 0.
 
     self.alert_level = AlertLevel.none
     self.always_on = always_on
@@ -156,9 +158,10 @@ class DriverMonitoring:
     self.cnt_since_alert_3 = 0
     self.no_response_timeout = int(self.settings._NO_RESPONSE_TIMEOUT / DT_DMON)
     self.no_response_cnt = 0
-    # This opt-in test switch suppresses only the persistent "too distracted"
-    # lockout. Alert levels and the underlying pose/eye/phone signals are kept.
-    self.lockout_disabled = Params().get_bool("DisableDriverMonitoringLockout")
+    # The default suppresses re-engagement lockouts for all monitoring causes.
+    # Keep escalating alerts and no-response behavior active.
+    lockout_setting = Params().get("DisableDriverMonitoringLockout", return_default=True)
+    self.lockout_disabled = True if lockout_setting is None else lockout_setting
     self.lockout_active = not self.lockout_disabled and Params().get_bool("DriverTooDistracted")
     self.lockout_count = Params().get("DriverLockoutCount") or 0
     self.lockout_duration = self.settings._LOCKOUT_TIMES[min(max(self.lockout_count - 1, 0), len(self.settings._LOCKOUT_TIMES) - 1)]
@@ -251,9 +254,9 @@ class DriverMonitoring:
     yaw_threshold = self.settings._POSE_YAW_THRESHOLD * self.pose.cfactor_yaw
 
     self.distracted_types['pose'] = bool(pitch_distracted or (yaw_error > yaw_threshold))
-    # Temporarily suppress generic eye-distraction alerts; eyesClosed remains tracked separately.
-    self.distracted_types['eye'] = False
-    self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
+    # Escalate only sustained eye closure or high sleep probability, not gaze direction.
+    self.distracted_types['eye'] = self.eyes_closed
+    self.distracted_types['phone'] = False
 
   def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, lowspeed, demo_mode=False, steering_angle_deg=0.):
     rhd_pred = driver_state.wheelOnRightProb
@@ -274,6 +277,10 @@ class DriverMonitoring:
     driver_data = driver_state.rightDriverData if self.wheel_on_right else driver_state.leftDriverData
     if not all(len(x) > 0 for x in (driver_data.faceOrientation, driver_data.facePosition,
                                     driver_data.faceOrientationStd, driver_data.facePositionStd)):
+      self.eyes_closed_time = 0.0
+      self.eyes_closed = False
+      self.distracted_types['eye'] = False
+      self.face_detected = False
       return
 
     self.face_detected = driver_data.faceProb > self.settings._FACE_THRESHOLD
@@ -291,9 +298,12 @@ class DriverMonitoring:
     self.blink.right = driver_data.rightBlinkProb * (driver_data.rightEyeProb > self.settings._EYE_THRESHOLD) \
                       * (driver_data.sunglassesProb < self.settings._SG_THRESHOLD)
     self.phone_prob = driver_data.phoneProb
+    self.sleep_prob = driver_data.sleepProb
 
-    eyes_closed_now = (self.blink.left > self.settings._BLINK_THRESHOLD and
-                       self.blink.right > self.settings._BLINK_THRESHOLD)
+    eyes_closed_now = self.face_detected and self.pose.low_std and (
+      (self.blink.left > self.settings._BLINK_THRESHOLD and self.blink.right > self.settings._BLINK_THRESHOLD) or
+      self.sleep_prob > self.settings._SLEEP_THRESHOLD
+    )
     self.eyes_closed_time = self.eyes_closed_time + DT_DMON if eyes_closed_now else 0.0
     self.eyes_closed = self.eyes_closed_time >= self.settings._EYES_CLOSED_TIME
 
@@ -413,7 +423,7 @@ class DriverMonitoring:
     dm.noResponseCount = self.no_response_cnt
     dm.noResponseForceDecel = self.alert_level == AlertLevel.three and self.cnt_since_alert_3 >= self.no_response_timeout
     dm.alwaysOn = self.always_on
-    dm.alwaysOnLockout = self.always_on and self.awareness <= self.threshold_alert_2
+    dm.alwaysOnLockout = not self.lockout_disabled and self.always_on and self.awareness <= self.threshold_alert_2
     dm.alertLevel = self.alert_level
     dm.activePolicy = self.active_policy
     dm.isRHD = self.wheel_on_right

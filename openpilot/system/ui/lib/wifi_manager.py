@@ -252,6 +252,8 @@ class WifiManager:
         return
 
       self._wifi_state = WifiState(ssid=ssid, status=status)
+      if status == ConnectStatus.CONNECTED and ssid and ssid != getattr(self, "_tethering_ssid", None) and Params is not None:
+        Params().put("LastWifiSSID", ssid)
 
     if block:
       worker()
