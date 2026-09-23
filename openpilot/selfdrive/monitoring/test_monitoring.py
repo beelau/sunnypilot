@@ -85,6 +85,24 @@ class TestMonitoring(OpenpilotTestCase):
     assert not DM.driver_distracted
     assert DM.get_state_packet().driverMonitoringState.visionPolicyState.eyesClosed
 
+  def test_pose_pitch_asymmetric_boundaries(self):
+    def pose_is_distracted(pitch):
+      DM = DriverMonitoring()
+      DM.pose.calibrated = True
+      DM.pose.pitch = pitch
+      DM.pose.yaw = DM.settings._YAW_NATURAL_OFFSET
+      DM.pose.pitch_offsetter.filtered_stat.M = 0.
+      DM.pose.yaw_offsetter.filtered_stat.M = DM.settings._YAW_NATURAL_OFFSET
+      DM._get_distracted_types()
+      return DM.distracted_types['pose']
+
+    # Positive pitch is upward: retain the existing calibrated threshold.
+    assert not pose_is_distracted(0.30)
+    assert pose_is_distracted(0.32)
+    # Negative pitch is downward: allow the new 0.40 rad threshold.
+    assert not pose_is_distracted(-0.39)
+    assert pose_is_distracted(-0.41)
+
   # engaged, driver is distracted and does nothing
   def test_fully_distracted_driver(self):
     alert_lvls, d_status = self._run_seq(always_distracted, always_false, always_true, always_false)

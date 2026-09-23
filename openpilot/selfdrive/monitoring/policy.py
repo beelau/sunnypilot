@@ -53,6 +53,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYES_CLOSED_TIME = 1.0
     self._PHONE_THRESH = 0.5
     self._POSE_PITCH_THRESHOLD = 0.3133
+    self._POSE_PITCH_DOWN_THRESHOLD = 0.40
     self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
     self._POSE_PITCH_THRESHOLD_STRICT = self._POSE_PITCH_THRESHOLD
     self._POSE_YAW_THRESHOLD = 0.4020
@@ -228,22 +229,28 @@ class DriverMonitoring:
     if not self.pose.calibrated:
       pitch_error = self.pose.pitch - self.settings._PITCH_NATURAL_OFFSET
       yaw_error = self.pose.yaw - self.settings._YAW_NATURAL_OFFSET
+      pitch_up_threshold = self.settings._PITCH_NATURAL_THRESHOLD
+      pitch_down_threshold = self.settings._PITCH_NATURAL_THRESHOLD
     else:
       pitch_error = self.pose.pitch - min(max(self.pose.pitch_offsetter.filtered_stat.mean(),
                                                        self.settings._PITCH_MIN_OFFSET), self.settings._PITCH_MAX_OFFSET)
       yaw_error = self.pose.yaw - min(max(self.pose.yaw_offsetter.filtered_stat.mean(),
                                                     self.settings._YAW_MIN_OFFSET), self.settings._YAW_MAX_OFFSET)
-    pitch_error = 0 if pitch_error > 0 else abs(pitch_error) # no positive pitch limit
+      # Positive pitch is upward and negative pitch is downward in the model/UI convention.
+      pitch_up_threshold = self.settings._POSE_PITCH_THRESHOLD * self.pose.cfactor_pitch
+      pitch_down_threshold = self.settings._POSE_PITCH_DOWN_THRESHOLD * self.pose.cfactor_pitch
+
+    pitch_distracted = (pitch_error > pitch_up_threshold if pitch_error >= 0 else
+                        -pitch_error > pitch_down_threshold)
 
     if yaw_error * self.pose.steer_yaw_offset > 0: # unidirectional
       yaw_error = max(abs(yaw_error) - min(abs(self.pose.steer_yaw_offset), self.settings._POSE_YAW_STEER_MAX_OFFSET), 0.)
     else:
       yaw_error = abs(yaw_error)
 
-    pitch_threshold = self.settings._POSE_PITCH_THRESHOLD * self.pose.cfactor_pitch if self.pose.calibrated else self.settings._PITCH_NATURAL_THRESHOLD
     yaw_threshold = self.settings._POSE_YAW_THRESHOLD * self.pose.cfactor_yaw
 
-    self.distracted_types['pose'] = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
+    self.distracted_types['pose'] = bool(pitch_distracted or (yaw_error > yaw_threshold))
     # Temporarily suppress generic eye-distraction alerts; eyesClosed remains tracked separately.
     self.distracted_types['eye'] = False
     self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
