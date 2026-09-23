@@ -154,9 +154,22 @@ class Soundd(QuietMode):
       self.current_sound_frame = 0
 
   def get_audible_alert(self, sm):
+    eye_closed_alarm = sm['driverMonitoringState'].visionPolicyState.eyesClosed
+
     if sm.updated['selfdriveState']:
       new_alert = sm['selfdriveState'].alertSound.raw
-      self.update_alert(new_alert)
+      # Driver monitoring's eye-closure alarm is sound-only. Let any normal
+      # selfdrive alert take priority, but play the repeating prompt when the
+      # normal alert channel is idle.
+      if new_alert == AudibleAlert.none and eye_closed_alarm:
+        self.update_alert(AudibleAlert.promptRepeat)
+      else:
+        self.update_alert(new_alert)
+    elif sm.updated['driverMonitoringState']:
+      if eye_closed_alarm and sm['selfdriveState'].alertSound.raw == AudibleAlert.none:
+        self.update_alert(AudibleAlert.promptRepeat)
+      elif not eye_closed_alarm and self.current_alert == AudibleAlert.promptRepeat:
+        self.update_alert(AudibleAlert.none)
     elif check_selfdrive_timeout_alert(sm):
       self.update_alert(AudibleAlert.warningImmediate)
       self.selfdrive_timeout_alert = True
@@ -180,7 +193,7 @@ class Soundd(QuietMode):
     import sounddevice as sd
     micd.patch_sounddevice(sd)
 
-    sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'soundPressure'])
+    sm = messaging.SubMaster(['selfdriveState', 'selfdriveStateSP', 'driverMonitoringState', 'soundPressure'])
 
     with self.get_stream(sd) as stream:
       rk = Ratekeeper(20)
