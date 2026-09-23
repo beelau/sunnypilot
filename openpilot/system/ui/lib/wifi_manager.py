@@ -487,6 +487,10 @@ class WifiManager:
         save_reply = self._conn_monitor.send_and_get_reply(new_method_call(conn_addr, 'Save'))
         if save_reply.header.message_type == MessageType.error:
           cloudlog.warning(f"Failed to persist connection to disk: {save_reply}")
+        elif wifi_state.ssid and wifi_state.ssid != getattr(self, '_tethering_ssid', None) and Params is not None:
+          # NetworkManager owns the saved profile (including its credentials). Keep only
+          # the SSID so the boot reconnect helper can select that profile next time.
+          Params().put("LastWifiSSID", wifi_state.ssid, block=True)
 
     elif new_state == NMDeviceState.DEACTIVATING:
       # Must clear state when forgetting the currently connected network so the UI

@@ -905,3 +905,27 @@ class TestWorkerErrorRecovery(OpenpilotTestCase):
     mock_init.assert_called_once()
     assert wm._wifi_state.ssid == "A"
     assert wm._wifi_state.status == ConnectStatus.CONNECTED
+
+
+class TestRememberLastWifi(OpenpilotTestCase):
+  def test_activated_saved_connection_remembers_ssid(self, mocker):
+    wm = _make_wm(mocker, connections={"Desk WiFi": "/path/desk"})
+    wm._tethering_ssid = "device-hotspot"
+    wm._get_active_wifi_connection.return_value = ("/path/desk", {})
+    wm._conn_monitor.send_and_get_reply.return_value.header.message_type = MessageType.method_return
+    params = mocker.patch('openpilot.system.ui.lib.wifi_manager.Params').return_value
+
+    fire(wm, NMDeviceState.ACTIVATED)
+
+    params.put.assert_called_once_with("LastWifiSSID", "Desk WiFi", block=True)
+
+  def test_activated_tethering_does_not_replace_last_wifi(self, mocker):
+    wm = _make_wm(mocker, connections={"device-hotspot": "/path/hotspot"})
+    wm._tethering_ssid = "device-hotspot"
+    wm._get_active_wifi_connection.return_value = ("/path/hotspot", {})
+    wm._conn_monitor.send_and_get_reply.return_value.header.message_type = MessageType.method_return
+    params = mocker.patch('openpilot.system.ui.lib.wifi_manager.Params').return_value
+
+    fire(wm, NMDeviceState.ACTIVATED)
+
+    params.put.assert_not_called()

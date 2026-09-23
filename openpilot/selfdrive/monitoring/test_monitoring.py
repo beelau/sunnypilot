@@ -15,7 +15,7 @@ DISTRACTED_SECONDS_TO_RED = dm_settings._VISION_POLICY_ALERT_3_TIMEOUT + 1
 INVISIBLE_SECONDS_TO_ORANGE = dm_settings._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT + 1
 INVISIBLE_SECONDS_TO_RED = dm_settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT + 1
 
-def make_msg(face_detected, distracted=False, model_uncertain=False):
+def make_msg(face_detected, distracted=False, model_uncertain=False, pose_distracted=None):
   ds = log.DriverStateV2.new_message()
   ds.leftDriverData.faceOrientation = [0., 0., 0.]
   ds.leftDriverData.facePosition = [0., 0.]
@@ -26,6 +26,9 @@ def make_msg(face_detected, distracted=False, model_uncertain=False):
   ds.leftDriverData.rightBlinkProb = 1. * distracted
   ds.leftDriverData.faceOrientationStd = [1.*model_uncertain, 1.*model_uncertain, 1.*model_uncertain]
   ds.leftDriverData.facePositionStd = [1.*model_uncertain, 1.*model_uncertain]
+  is_pose_distracted = distracted if pose_distracted is None else pose_distracted
+  if is_pose_distracted:
+    ds.leftDriverData.faceOrientation[1] = 1.0
   # TODO: test both separately when e2e is used
   ds.leftDriverData.phoneProb = 0.
   return ds
@@ -38,6 +41,7 @@ msg_DISTRACTED = make_msg(True, distracted=True)
 msg_ATTENTIVE_UNCERTAIN = make_msg(True, model_uncertain=True)
 msg_DISTRACTED_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=True)
 msg_DISTRACTED_BUT_SOMEHOW_UNCERTAIN = make_msg(True, distracted=True, model_uncertain=dm_settings._HI_STD_THRESHOLD*1.5)
+msg_EYES_CLOSED_ONLY = make_msg(True, distracted=True, pose_distracted=False)
 
 # driver interaction with car
 car_interaction_DETECTED = True
@@ -70,6 +74,16 @@ class TestMonitoring(OpenpilotTestCase):
     alert_lvls, d_status = self._run_seq(always_attentive, always_false, always_true, always_false)
     assert all(a == 0 for a in alert_lvls)
     assert d_status.active_policy == log.DriverMonitoringState.MonitoringPolicy.vision
+
+  def test_eyes_closed_is_separate_from_distraction(self):
+    DM = DriverMonitoring()
+    for _ in range(int(DM.settings._EYES_CLOSED_TIME / DT_DMON) + 1):
+      DM._update_states(msg_EYES_CLOSED_ONLY, [0, 0, 0], 0, True, False)
+
+    assert DM.eyes_closed
+    assert not DM.distracted_types['eye']
+    assert not DM.driver_distracted
+    assert DM.get_state_packet().driverMonitoringState.visionPolicyState.eyesClosed
 
   # engaged, driver is distracted and does nothing
   def test_fully_distracted_driver(self):

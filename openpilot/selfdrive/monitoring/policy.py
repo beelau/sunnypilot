@@ -50,6 +50,7 @@ class DRIVER_MONITOR_SETTINGS:
     self._EYE_THRESHOLD = 0.65
     self._SG_THRESHOLD = 0.9
     self._BLINK_THRESHOLD = 0.865
+    self._EYES_CLOSED_TIME = 1.0
     self._PHONE_THRESH = 0.5
     self._POSE_PITCH_THRESHOLD = 0.3133
     self._POSE_PITCH_THRESHOLD_SLACK = 0.3237
@@ -137,6 +138,8 @@ class DriverMonitoring:
     self.wheelpos_offsetter = RunningStatFilter(raw_priors=wheelpos_filter_raw_priors, max_trackable=self.settings._WHEELPOS_MAX_COUNT)
     self.pose = DriverPose(settings=self.settings)
     self.blink = DriverBlink()
+    self.eyes_closed = False
+    self.eyes_closed_time = 0.0
     self.phone_prob = 0.
 
     self.alert_level = AlertLevel.none
@@ -152,7 +155,10 @@ class DriverMonitoring:
     self.cnt_since_alert_3 = 0
     self.no_response_timeout = int(self.settings._NO_RESPONSE_TIMEOUT / DT_DMON)
     self.no_response_cnt = 0
-    self.lockout_active = Params().get_bool("DriverTooDistracted")
+    # This opt-in test switch suppresses only the persistent "too distracted"
+    # lockout. Alert levels and the underlying pose/eye/phone signals are kept.
+    self.lockout_disabled = Params().get_bool("DisableDriverMonitoringLockout")
+    self.lockout_active = not self.lockout_disabled and Params().get_bool("DriverTooDistracted")
     self.lockout_count = Params().get("DriverLockoutCount") or 0
     self.lockout_duration = self.settings._LOCKOUT_TIMES[min(max(self.lockout_count - 1, 0), len(self.settings._LOCKOUT_TIMES) - 1)]
     self.lockout_time_elapsed = 0
@@ -238,7 +244,8 @@ class DriverMonitoring:
     yaw_threshold = self.settings._POSE_YAW_THRESHOLD * self.pose.cfactor_yaw
 
     self.distracted_types['pose'] = bool((pitch_error > pitch_threshold) or (yaw_error > yaw_threshold))
-    self.distracted_types['eye'] = bool((self.blink.left + self.blink.right)*0.5 > self.settings._BLINK_THRESHOLD)
+    # Temporarily suppress generic eye-distraction alerts; eyesClosed remains tracked separately.
+    self.distracted_types['eye'] = False
     self.distracted_types['phone'] = bool(self.phone_prob > self.settings._PHONE_THRESH)
 
   def _update_states(self, driver_state, cal_rpy, car_speed, op_engaged, lowspeed, demo_mode=False, steering_angle_deg=0.):
@@ -278,6 +285,11 @@ class DriverMonitoring:
                       * (driver_data.sunglassesProb < self.settings._SG_THRESHOLD)
     self.phone_prob = driver_data.phoneProb
 
+    eyes_closed_now = (self.blink.left > self.settings._BLINK_THRESHOLD and
+                       self.blink.right > self.settings._BLINK_THRESHOLD)
+    self.eyes_closed_time = self.eyes_closed_time + DT_DMON if eyes_closed_now else 0.0
+    self.eyes_closed = self.eyes_closed_time >= self.settings._EYES_CLOSED_TIME
+
     self._get_distracted_types()
     self.driver_distracted = any(self.distracted_types.values()) and driver_data.faceProb > self.settings._FACE_THRESHOLD and self.pose.low_std
     self.driver_distraction_filter.update(self.driver_distracted)
@@ -311,7 +323,8 @@ class DriverMonitoring:
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
 
-    if self.alert_3_cnt >= self.settings._MAX_ALERT_3 or self.no_response_cnt >= self.settings._MAX_NO_RESPONSE:
+    if not self.lockout_disabled and (self.alert_3_cnt >= self.settings._MAX_ALERT_3 or
+                                      self.no_response_cnt >= self.settings._MAX_NO_RESPONSE):
       if not self.lockout_active:
         self.lockout_count += 1
         self.lockout_duration = self.settings._LOCKOUT_TIMES[min(self.lockout_count - 1, len(self.settings._LOCKOUT_TIMES) - 1)]
@@ -403,6 +416,7 @@ class DriverMonitoring:
     dm.visionPolicyState.awarenessPercent = to_percent(self.last_vision_awareness if self.active_policy != MonitoringPolicy.vision else self.awareness)
     dm.visionPolicyState.awarenessStep = self.step_change if self.active_policy == MonitoringPolicy.vision else 0.
     dm.visionPolicyState.isDistracted = self.driver_distracted
+    dm.visionPolicyState.eyesClosed = self.eyes_closed
     dm.visionPolicyState.distractedTypes.pose = self.distracted_types['pose']
     dm.visionPolicyState.distractedTypes.eye = self.distracted_types['eye']
     dm.visionPolicyState.distractedTypes.phone = self.distracted_types['phone']
